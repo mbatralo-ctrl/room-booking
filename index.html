@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Office Room Reservations</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#6b7280;--line:#e3e6eb;--accent:#2f6fed;--busy:#fde2e2;--busyt:#9b1c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--text:#e8eaee;--muted:#9aa3b2;--line:#2c323c;--accent:#6c9bff;--busy:#4a2226;--busyt:#fca5a5}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 16px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+button,input,select{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+button{cursor:pointer}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+.datelabel{font-weight:600;min-width:170px;text-align:center}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+.grid-scroll{overflow-x:auto}
+table{border-collapse:separate;border-spacing:0;width:100%;min-width:640px;user-select:none;touch-action:pan-y}
+th,td{border-bottom:1px solid var(--line);padding:0;text-align:center}
+th{font-weight:600;font-size:13px;padding:8px 6px;background:var(--card)}
+th small{display:block;color:var(--muted);font-weight:400}
+td.t{width:64px;color:var(--muted);font-size:12px;padding:0 6px;text-align:right}
+td.s{height:34px;border-left:1px solid var(--line);cursor:pointer;font-size:12px}
+td.s:hover{background:rgba(47,111,237,.08)}
+td.s.busy{background:var(--busy);color:var(--busyt);cursor:default}
+td.s.sel{outline:2px solid var(--accent);outline-offset:-2px;background:rgba(47,111,237,.18)}
+td.s.past{opacity:.4;cursor:not-allowed}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.form input,.form select{width:100%}
+.msg{margin-top:10px;font-size:14px}.err{color:#d33}.ok{color:#198754}
+ul.list{list-style:none;margin:0;padding:0}
+ul.list li{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+ul.list li:last-child{border-bottom:0}
+.muted{color:var(--muted)}
+.x{padding:4px 10px;font-size:13px}
+.note{font-size:12px;color:var(--muted);margin-top:8px}
+.setup{background:#fff4d6;color:#5b4300;border:1px solid #f0d58a;border-radius:10px;padding:12px;margin-bottom:14px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Office Room Reservations</h1>
+  <p class="sub">Click a free slot (or drag across several) in the grid, then fill in the form and book.</p>
+
+  <div class="setup" id="setup"><strong>Setup needed:</strong> open <code>index.html</code> and paste your Google Apps Script web app URL into <code>API_URL</code> at the top of the script.</div>
+
+  <div class="bar">
+    <button id="prev" aria-label="Previous day">◀</button>
+    <div class="datelabel" id="dlabel"></div>
+    <button id="next" aria-label="Next day">▶</button>
+    <button id="today">Today</button>
+    <input type="date" id="dpick">
+  </div>
+
+  <div class="card grid-scroll"><table id="grid"></table></div>
+
+  <div class="card">
+    <div class="form">
+      <div><label>Room</label><select id="room"></select></div>
+      <div><label>Start</label><select id="start"></select></div>
+      <div><label>End</label><select id="end"></select></div>
+      <div><label>Full Name</label><input id="name" maxlength="40" placeholder="e.g. Maria Santos" required></div>
+      <div><label>Purpose</label><input id="purpose" maxlength="60" placeholder="e.g. Team meeting" required></div>
+      <div><button class="primary" id="book" style="width:100%">Book room</button></div>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div class="note" id="status"></div>
+  </div>
+
+  <div class="card">
+    <strong>Bookings on this day</strong>
+    <ul class="list" id="daylist"></ul>
+  </div>
+</div>
+
+<script>
+// >>> Paste your Apps Script Web app URL here (it ends in /exec) <<<
+var API_URL = "https://script.google.com/macros/s/AKfycbzY2lOy3tpA02nUfY14lTv0TftbQp9HZjM5NnwdN2_KNNPNBvOOcdTyVofrmadJ5jg/exec";
+
+var ROOMS=[
+ {id:"boardroom",name:"Boardroom",seats:12},
+ {id:"imonggo",name:"Imonggo Room",seats:8},
+ {id:"youtube",name:"YouTube Room",seats:4},
+ {id:"play",name:"Play Room",seats:4}
+];
+var START_H=8,END_H=19,STEP=30;
+var slots=[];for(var m=START_H*60;m<END_H*60;m+=STEP)slots.push(m);
+
+var bookings=[],sel=null,dragStart=null,curDate=todayStr();
+var configured=API_URL&&API_URL.indexOf("PASTE_")!==0;
+
+function todayStr(){return fmtDate(new Date())}
+function fmtDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
+function parseDate(s){var p=s.split("-");return new Date(+p[0],+p[1]-1,+p[2])}
+function hm(m){var h=Math.floor(m/60),mm=m%60,ap=h>=12?"PM":"AM",h12=h%12||12;return h12+":"+String(mm).padStart(2,"0")+" "+ap}
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
+function roomName(id){for(var i=0;i<ROOMS.length;i++)if(ROOMS[i].id===id)return ROOMS[i].name;return id}
+function isPast(m){return curDate<todayStr()||(curDate===todayStr()&&(function(){var n=new Date();return m+STEP<=n.getHours()*60+n.getMinutes()})())}
+function $(id){return document.getElementById(id)}
+function setMsg(t,cls){var e=$("msg");e.textContent=t||"";e.className="msg "+(cls||"")}
+
+function findBooking(room,date,m){
+  for(var i=0;i<bookings.length;i++){var b=bookings[i];
+    if(b.room===room&&b.date===date&&b.start<=m&&m<b.end)return b}
+  return null;
+}
+
+function render(){
+  $("dlabel").textContent=parseDate(curDate).toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric",year:"numeric"});
+  $("dpick").value=curDate;
+  var h='<tr><th></th>'+ROOMS.map(function(r){return '<th>'+r.name+'<small>'+r.seats+' seats</small></th>'}).join("")+'</tr>';
+  slots.forEach(function(m){
+    h+='<tr><td class="t">'+(m%60===0?hm(m):"")+'</td>';
+    ROOMS.forEach(function(r){
+      var b=findBooking(r.id,curDate,m),cls="s",txt="";
+      if(b){cls+=" busy";if(b.start===m)txt=esc(b.name)}
+      else if(isPast(m))cls+=" past";
+      if(sel&&sel.room===r.id&&m>=sel.from&&m<sel.to&&!b)cls+=" sel";
+      h+='<td class="'+cls+'" data-room="'+r.id+'" data-m="'+m+'">'+txt+'</td>';
+    });
+    h+='</tr>';
+  });
+  $("grid").innerHTML=h;
+  renderList();
+}
+
+function renderList(){
+  var day=bookings.filter(function(b){return b.date===curDate}).sort(function(a,b){return a.start-b.start});
+  var ul=$("daylist");
+  if(!day.length){ul.innerHTML='<li class="muted">No bookings yet for this day.</li>';return}
+  ul.innerHTML=day.map(function(b){
+    return '<li><span><strong>'+hm(b.start)+' – '+hm(b.end)+'</strong> · '+roomName(b.room)+' · '+esc(b.name)+
+      ' <span class="muted">('+esc(b.purpose)+')</span></span><button class="x" data-id="'+esc(b.id)+'">Cancel</button></li>';
+  }).join("");
+}
+
+function fillSelects(){
+  $("room").innerHTML=ROOMS.map(function(r){return '<option value="'+r.id+'">'+r.name+' ('+r.seats+' seats)</option>'}).join("");
+  $("start").innerHTML=slots.map(function(m){return '<option value="'+m+'">'+hm(m)+'</option>'}).join("");
+  $("end").innerHTML=slots.map(function(m){return '<option value="'+(m+STEP)+'">'+hm(m+STEP)+'</option>'}).join("");
+  $("start").value=String(9*60);$("end").value=String(10*60);
+}
+function syncForm(){if(!sel)return;$("room").value=sel.room;$("start").value=String(sel.from);$("end").value=String(sel.to)}
+
+var grid=$("grid");
+function cellInfo(t){var c=t.closest&&t.closest("td.s");return c?{room:c.dataset.room,m:+c.dataset.m,el:c}:null}
+grid.addEventListener("pointerdown",function(e){
+  var c=cellInfo(e.target);if(!c||c.el.classList.contains("busy")||c.el.classList.contains("past"))return;
+  dragStart=c;sel={room:c.room,from:c.m,to:c.m+STEP};syncForm();render();
+});
+grid.addEventListener("pointerover",function(e){
+  if(!dragStart)return;var c=cellInfo(e.target);if(!c||c.room!==dragStart.room)return;
+  sel={room:dragStart.room,from:Math.min(dragStart.m,c.m),to:Math.max(dragStart.m,c.m)+STEP};syncForm();render();
+});
+document.addEventListener("pointerup",function(){dragStart=null});
+["room","start","end"].forEach(function(id){
+  $(id).addEventListener("change",function(){
+    sel={room:$("room").value,from:+$("start").value,to:+$("end").value};render();
+  });
+});
+
+function shift(n){var d=parseDate(curDate);d.setDate(d.getDate()+n);curDate=fmtDate(d);sel=null;render()}
+$("prev").onclick=function(){shift(-1)};
+$("next").onclick=function(){shift(1)};
+$("today").onclick=function(){curDate=todayStr();sel=null;render()};
+$("dpick").onchange=function(e){if(e.target.value){curDate=e.target.value;sel=null;render()}};
+
+// ---- talking to the Google Sheet backend ----
+async function load(){
+  if(!configured)return;
+  try{
+    var from=fmtDate(new Date(Date.now()-86400000*7));
+    var res=await fetch(API_URL+"?action=list&from="+from);
+    var data=await res.json();
+    if(!data.ok)throw new Error(data.error);
+    bookings=data.bookings;render();
+    $("status").textContent="Bookings are shared with everyone using this page (refreshes every 20 seconds).";
+  }catch(e){
+    $("status").textContent="Couldn't reach the booking sheet. Check your connection or the API_URL setting.";
+  }
+}
+async function post(payload){
+  var res=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});
+  return res.json();
+}
+
+$("book").onclick=async function(){
+  if(!configured){setMsg("Set API_URL first (see the yellow setup note).","err");return}
+  var room=$("room").value,s=+$("start").value,e=+$("end").value;
+  var name=$("name").value.trim(),purpose=$("purpose").value.trim();
+  if(!name){setMsg("Please enter your full name.","err");return}
+  if(!purpose){setMsg("Please enter the purpose of the booking.","err");return}
+  if(e<=s){setMsg("End time must be after start time.","err");return}
+  for(var m=s;m<e;m+=STEP){
+    if(findBooking(room,curDate,m)){setMsg(roomName(room)+" is already booked at "+hm(m)+". Pick another time or room.","err");return}
+    if(isPast(m)){setMsg("That time has already passed.","err");return}
+  }
+  var btn=$("book");btn.disabled=true;setMsg("Booking…");
+  try{
+    var r=await post({action:"book",room:room,date:curDate,start:s,end:e,name:name,purpose:purpose});
+    if(!r.ok){setMsg(r.error||"Couldn't save the booking.","err");await load()}
+    else{setMsg("Booked "+roomName(room)+", "+hm(s)+" – "+hm(e)+".","ok");sel=null;
+      try{localStorage.setItem("room-name",name)}catch(_){}
+      await load()}
+  }catch(err){setMsg("Couldn't save the booking. Please try again.","err")}
+  btn.disabled=false;
+};
+
+$("daylist").addEventListener("click",async function(e){
+  var b=e.target.closest("button[data-id]");if(!b)return;
+  if(!confirm("Cancel this booking?"))return;
+  b.disabled=true;
+  try{
+    var r=await post({action:"cancel",id:b.dataset.id});
+    setMsg(r.ok?"Booking cancelled.":(r.error||"Couldn't cancel."),r.ok?"ok":"err");
+    await load();
+  }catch(err){setMsg("Couldn't cancel that booking.","err");b.disabled=false}
+});
+
+// init
+fillSelects();
+try{var n=localStorage.getItem("room-name");if(n)$("name").value=n}catch(_){}
+if(!configured)$("setup").style.display="block";
+render();load();
+setInterval(load,20000);
+setInterval(render,60000);
+</script>
+</body>
+</html>
