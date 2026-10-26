@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Office Room Reservations</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#6b7280;--line:#e3e6eb;--accent:#2f6fed;--busy:#fde2e2;--busyt:#9b1c1c}
 @media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--text:#e8eaee;--muted:#9aa3b2;--line:#2c323c;--accent:#6c9bff;--busy:#4a2226;--busyt:#fca5a5}}
@@ -47,7 +48,16 @@ ul.list li:last-child{border-bottom:0}
   <h1>Office Room Reservations</h1>
   <p class="sub">Click a free slot (or drag across several) in the grid, then fill in the form and book.</p>
 
-  <div class="setup" id="setup"><strong>Setup needed:</strong> open <code>index.html</code> and paste your Google Apps Script web app URL into <code>API_URL</code> at the top of the script.</div>
+  <div class="setup" id="setup"><strong>Setup needed:</strong> open <code>index.html</code> and paste your Google Apps Script web app URL into <code>API_URL</code> and your Google sign-in Client ID into <code>GOOGLE_CLIENT_ID</code> at the top of the script.</div>
+
+  <div class="card" id="gate" style="display:none;text-align:center">
+    <p style="margin:0 0 12px"><strong>Sign in with your company Google account to view and book rooms.</strong></p>
+    <div id="gbtn" style="display:flex;justify-content:center"></div>
+    <div class="msg err" id="gatemsg"></div>
+  </div>
+
+  <div id="app" style="display:none">
+  <div class="note" style="margin:-8px 0 12px">Signed in as <strong id="who"></strong> · <a href="#" id="signout">Sign out</a></div>
 
   <div class="bar">
     <button id="prev" aria-label="Previous day">◀</button>
@@ -79,11 +89,14 @@ ul.list li:last-child{border-bottom:0}
     <strong>Bookings on this day</strong>
     <ul class="list" id="daylist"></ul>
   </div>
+  </div><!-- /app -->
 </div>
 
 <script>
 // >>> Paste your Apps Script Web app URL here (it ends in /exec) <<<
-var API_URL = "https://script.google.com/macros/s/AKfycbzY2lOy3tpA02nUfY14lTv0TftbQp9HZjM5NnwdN2_KNNPNBvOOcdTyVofrmadJ5jg/exec";
+var API_URL = "PASTE_WEB_APP_URL_HERE";
+// >>> Paste your Google OAuth Client ID here (it ends in .apps.googleusercontent.com) <<<
+var GOOGLE_CLIENT_ID = "PASTE_CLIENT_ID_HERE.apps.googleusercontent.com";
 
 var ROOMS=[
  {id:"boardroom",name:"Boardroom",seats:12},
@@ -95,7 +108,8 @@ var START_H=8,END_H=19,STEP=30;
 var slots=[];for(var m=START_H*60;m<END_H*60;m+=STEP)slots.push(m);
 
 var bookings=[],sel=null,dragStart=null,curDate=todayStr();
-var configured=API_URL&&API_URL.indexOf("PASTE_")!==0;
+var configured=API_URL&&API_URL.indexOf("PASTE_")!==0&&GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_ID.indexOf("PASTE_")!==0;
+var idToken=null,refreshTimer=null;
 
 function todayStr(){return fmtDate(new Date())}
 function fmtDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
@@ -177,11 +191,10 @@ $("dpick").onchange=function(e){if(e.target.value){curDate=e.target.value;sel=nu
 
 // ---- talking to the Google Sheet backend ----
 async function load(){
-  if(!configured)return;
+  if(!configured||!idToken)return;
   try{
     var from=fmtDate(new Date(Date.now()-86400000*7));
-    var res=await fetch(API_URL+"?action=list&from="+from);
-    var data=await res.json();
+    var data=await post({action:"list",from:from});
     if(!data.ok)throw new Error(data.error);
     bookings=data.bookings;render();
     $("status").textContent="Bookings are shared with everyone using this page (refreshes every 20 seconds).";
@@ -190,12 +203,44 @@ async function load(){
   }
 }
 async function post(payload){
+  payload.token=idToken;
   var res=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});
-  return res.json();
+  var r=await res.json();
+  if(r&&r.auth)showGate("Your session expired, or this account isn't allowed. Please sign in with your company Google account.");
+  return r;
 }
 
+// ---- Google sign-in (only company-domain accounts are accepted by the server) ----
+function jwtEmail(t){
+  try{var p=t.split(".")[1].replace(/-/g,"+").replace(/_/g,"/");return JSON.parse(atob(p)).email||""}catch(e){return ""}
+}
+function showGate(msg){
+  idToken=null;bookings=[];clearTimeout(refreshTimer);
+  try{google.accounts.id.disableAutoSelect()}catch(_){}
+  $("app").style.display="none";$("gate").style.display="block";
+  $("gatemsg").textContent=msg||"";
+}
+function onCred(resp){
+  idToken=resp.credential;
+  var em=jwtEmail(idToken);
+  $("who").textContent=em;
+  if(!$("email").value)$("email").value=em;
+  $("gate").style.display="none";$("app").style.display="block";
+  clearTimeout(refreshTimer);
+  // sign-in tokens last about an hour; quietly renew before that
+  refreshTimer=setTimeout(function(){try{google.accounts.id.prompt()}catch(_){}},50*60*1000);
+  render();load();
+}
+function initGsi(){
+  if(!window.google||!google.accounts||!google.accounts.id){setTimeout(initGsi,200);return}
+  google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onCred,auto_select:true});
+  google.accounts.id.renderButton($("gbtn"),{theme:"outline",size:"large"});
+  google.accounts.id.prompt();
+}
+$("signout").onclick=function(e){e.preventDefault();showGate("You've signed out.")};
+
 $("book").onclick=async function(){
-  if(!configured){setMsg("Set API_URL first (see the yellow setup note).","err");return}
+  if(!configured||!idToken){setMsg("Please sign in first.","err");return}
   var room=$("room").value,s=+$("start").value,e=+$("end").value;
   var name=$("name").value.trim(),purpose=$("purpose").value.trim();
   var dept=$("dept").value.trim(),contact=$("contact").value.trim(),email=$("email").value.trim();
@@ -238,7 +283,8 @@ fillSelects();
 try{var me=JSON.parse(localStorage.getItem("room-me")||"null");
   if(me){$("name").value=me.name||"";$("dept").value=me.dept||"";$("contact").value=me.contact||"";$("email").value=me.email||""}}catch(_){}
 if(!configured)$("setup").style.display="block";
-render();load();
+else{$("gate").style.display="block";initGsi()}
+render();
 setInterval(load,20000);
 setInterval(render,60000);
 </script>
