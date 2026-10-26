@@ -28,6 +28,7 @@ td.t{width:64px;color:var(--muted);font-size:12px;padding:0 6px;text-align:right
 td.s{height:34px;border-left:1px solid var(--line);cursor:pointer;font-size:12px}
 td.s:hover{background:rgba(47,111,237,.08)}
 td.s.busy{background:var(--busy);color:var(--busyt);cursor:default}
+td.s.busy.mine{background:#dbeafe;color:#1e3a8a}
 td.s.sel{outline:2px solid var(--accent);outline-offset:-2px;background:rgba(47,111,237,.18)}
 td.s.past{opacity:.4;cursor:not-allowed}
 .form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
@@ -51,7 +52,7 @@ ul.list li:last-child{border-bottom:0}
   <div class="setup" id="setup"><strong>Setup needed:</strong> open <code>index.html</code> and paste your Google Apps Script web app URL into <code>API_URL</code> and your Google sign-in Client ID into <code>GOOGLE_CLIENT_ID</code> at the top of the script.</div>
 
   <div class="card" id="gate" style="display:none;text-align:center">
-    <p style="margin:0 0 12px"><strong>Sign in with your company Google account to view and book rooms.</strong></p>
+    <p style="margin:0 0 12px"><strong>Sign in with your approved Google account to view and book rooms.</strong></p>
     <div id="gbtn" style="display:flex;justify-content:center"></div>
     <div class="msg err" id="gatemsg"></div>
   </div>
@@ -135,7 +136,7 @@ function render(){
     h+='<tr><td class="t">'+(m%60===0?hm(m):"")+'</td>';
     ROOMS.forEach(function(r){
       var b=findBooking(r.id,curDate,m),cls="s",txt="";
-      if(b){cls+=" busy";if(b.start===m)txt=esc(b.name)}
+      if(b){cls+=" busy"+(b.mine?" mine":"");if(b.start===m)txt=esc(b.name)}
       else if(isPast(m))cls+=" past";
       if(sel&&sel.room===r.id&&m>=sel.from&&m<sel.to&&!b)cls+=" sel";
       h+='<td class="'+cls+'" data-room="'+r.id+'" data-m="'+m+'">'+txt+'</td>';
@@ -154,7 +155,7 @@ function renderList(){
     var info=[b.department,b.contact,b.email].filter(Boolean).map(esc).join(" · ");
     return '<li><span><strong>'+hm(b.start)+' – '+hm(b.end)+'</strong> · '+roomName(b.room)+' · '+esc(b.name)+
       ' <span class="muted">('+esc(b.purpose)+')</span>'+(info?'<br><span class="muted">'+info+'</span>':'')+
-      '</span><button class="x" data-id="'+esc(b.id)+'">Cancel</button></li>';
+      '</span>'+(b.mine?'<button class="x" data-id="'+esc(b.id)+'">Cancel</button>':'')+'</li>';
   }).join("");
 }
 
@@ -191,22 +192,24 @@ $("dpick").onchange=function(e){if(e.target.value){curDate=e.target.value;sel=nu
 
 // ---- talking to the Google Sheet backend ----
 async function load(){
-  if(!configured||!idToken)return;
+  if(!configured||!idToken)return false;
   try{
     var from=fmtDate(new Date(Date.now()-86400000*7));
     var data=await post({action:"list",from:from});
     if(!data.ok)throw new Error(data.error);
     bookings=data.bookings;render();
     $("status").textContent="Bookings are shared with everyone using this page (refreshes every 20 seconds).";
+    return true;
   }catch(e){
     $("status").textContent="Couldn't reach the booking sheet. Check your connection or the API_URL setting.";
+    return false;
   }
 }
 async function post(payload){
   payload.token=idToken;
   var res=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});
   var r=await res.json();
-  if(r&&r.auth)showGate("Your session expired, or this account isn't allowed. Please sign in with your company Google account.");
+  if(r&&r.auth)showGate(r.error||"Your session expired, or this account isn't on the approved list. Please sign in again.");
   return r;
 }
 
@@ -218,18 +221,26 @@ function showGate(msg){
   idToken=null;bookings=[];clearTimeout(refreshTimer);
   try{google.accounts.id.disableAutoSelect()}catch(_){}
   $("app").style.display="none";$("gate").style.display="block";
-  $("gatemsg").textContent=msg||"";
+  $("gatemsg").className="msg err";$("gatemsg").textContent=msg||"";
 }
-function onCred(resp){
+async function onCred(resp){
   idToken=resp.credential;
   var em=jwtEmail(idToken);
+  $("gatemsg").className="msg";$("gatemsg").textContent="Checking your access…";
+  // The page stays hidden until the server confirms this account is approved.
+  var ok=await load();
+  if(!ok||!idToken){
+    if(idToken)showGate("Couldn't reach the booking sheet. Please try again.");
+    return;
+  }
   $("who").textContent=em;
   if(!$("email").value)$("email").value=em;
+  $("gatemsg").textContent="";$("gatemsg").className="msg err";
   $("gate").style.display="none";$("app").style.display="block";
   clearTimeout(refreshTimer);
   // sign-in tokens last about an hour; quietly renew before that
   refreshTimer=setTimeout(function(){try{google.accounts.id.prompt()}catch(_){}},50*60*1000);
-  render();load();
+  render();
 }
 function initGsi(){
   if(!window.google||!google.accounts||!google.accounts.id){setTimeout(initGsi,200);return}
