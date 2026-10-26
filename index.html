@@ -110,7 +110,7 @@ var slots=[];for(var m=START_H*60;m<END_H*60;m+=STEP)slots.push(m);
 
 var bookings=[],sel=null,dragStart=null,curDate=todayStr();
 var configured=API_URL&&API_URL.indexOf("PASTE_")!==0&&GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_ID.indexOf("PASTE_")!==0;
-var idToken=null,refreshTimer=null;
+var idToken=null,refreshTimer=null,lastErr="";
 
 function todayStr(){return fmtDate(new Date())}
 function fmtDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
@@ -201,7 +201,8 @@ async function load(){
     $("status").textContent="Bookings are shared with everyone using this page (refreshes every 20 seconds).";
     return true;
   }catch(e){
-    $("status").textContent="Couldn't reach the booking sheet. Check your connection or the API_URL setting.";
+    lastErr=(e&&e.message)?e.message:"";
+    $("status").textContent="Couldn't load bookings"+(lastErr?": "+lastErr:". Check your connection or the API_URL setting.");
     return false;
   }
 }
@@ -230,7 +231,7 @@ async function onCred(resp){
   // The page stays hidden until the server confirms this account is approved.
   var ok=await load();
   if(!ok||!idToken){
-    if(idToken)showGate("Couldn't reach the booking sheet. Please try again.");
+    if(idToken)showGate("Couldn't load bookings"+(lastErr?" ("+lastErr+")":"")+". Please try again.");
     return;
   }
   $("who").textContent=em;
